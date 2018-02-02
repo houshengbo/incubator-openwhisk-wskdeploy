@@ -19,7 +19,122 @@ ext.dockerImageName = "wskdeploy"
 ext.dockerContainerName = "wskdeploy"
 ext.dockerBuildArgs = getDockerBuildArgs()
 apply from: 'gradle/docker.gradle'
+apply plugin: 'maven'
 
+buildscript {
+    repositories {
+        maven {
+            url "https://plugins.gradle.org/m2/"
+        }
+    }
+    dependencies {
+        classpath "gradle.plugin.org.nosphere.apache:creadur-rat-gradle:0.1.1"
+    }
+}
+
+apply plugin: "org.nosphere.apache.rat"
+
+rat {
+
+    // Input directory, defaults to '.'
+    //inputDir = '.'
+
+    // XML and HTML reports directory, defaults to project.buildDir + '/reports/rat'
+    //reportDir = project.file( project.buildDir + '/reports/rat' )
+
+    // List of exclude directives, defaults to ['**/.gradle/**']
+    excludes = [ "**/build/**" ]
+
+    // Fail the build on rat errors, defaults to true
+    failOnError = false
+
+    // Enable XML RAT output, defaults to true
+    //xmlOutput = true
+
+    // Enable HTML RAT output, defaults to true
+    //htmlOutput = true
+
+    // Enable plain text RAT output, defaults to false
+    // Please note that if xml or html output is enabled too,
+    // then two RAT runs will be needed to produce all reports.
+    //plainOutput = false
+
+}
+
+ext.basePackageName = "openwhisk-wskdeploy"
+ext.packageExtension = "tar.gz"
+if (project.hasProperty('projectVersion')) {
+    ext.packageVersion = "${projectVersion}"
+} else {
+    ext.packageVersion = ""
+}
+ext.buildFolder = "build"
+ext.canDeploy = ["deployUsernameProperty", "deployPasswordProperty", "apacheArchivesFolder"].every { project.hasProperty(it) }
+
+if (project.hasProperty('apacheArchivesFolder')) {
+    ext.archiveDeployFolder = "${apacheArchivesFolder}"
+} else {
+    ext.archiveDeployFolder = "build"
+}
+
+ext.svnStagingPath="https://dist.apache.org/repos/dist/dev/incubator/openwhisk"
+
+task taredSources(type: Tar) {
+    baseName basePackageName
+    description "Creates a combined tar.gz file of wskdeploy's sources"
+    group "Release artifact"
+    classifier "sources"
+
+    from(project.rootDir) {
+        include('cmd/*.go', 'deployers/*.go', 'parsers/*.go', 'utils/*.go',
+                'wskderrors/*.go', 'wskenv/*.go', 'wskprint/*.go', 'wski18n/**')
+        include('*.go')
+        include('gradle/**')
+        include('README.md', 'CONTRIBUTING.md', 'DEPENDENCIES.md')
+        include('gradlew', 'gradlew.bat', 'Dockerfile', 'build.gradle')
+        include('LICENSE', 'NOTICE', 'CHANGELOG')
+    }
+    destinationDir file(buildFolder)
+    extension packageExtension
+    version packageVersion
+    compression = Compression.GZIP
+}
+
+task cleanBuild(type: Delete) {
+    delete file(buildFolder).listFiles()
+}
+
+task copyArchives(type: Copy) {
+    group "Release artifact"
+    description "Copies build archives (source) to a configured deployment folder, along with MD5 checksums and PGP signatures (if signing is enabled)"
+    destinationDir file(archiveDeployFolder)
+    from taredSources
+}
+
+task commitToStaging() {
+    description = 'Commits the local staging to the Apache svn staging repository.'
+    group = 'release'
+    doLast {
+        getProject().exec {
+            commandLine 'svn',
+                    'import', buildFolder, svnStagingPath + "/${basePackageName}"  + "/",
+                    '-m', "Staging Apache OpenWhisk wskdeploy release ${packageVersion}."
+        }
+    }
+}
+
+task deleteFromStaging() {
+    description = 'Cancels the staged distribution from the Apache staging repository.'
+    group = 'release'
+
+    doLast {
+        getProject().exec {
+            commandLine 'svn',
+                    'delete', svnStagingPath + "/${basePackageName}/",
+                    "-m", "Removing Apache OpenWhisk wskdeploy release ${packageVersion} from staging."
+        }
+    }
+}
 
 task removeBinary(type: Delete) {
     delete "${projectDir}/bin/wskdeploy"
